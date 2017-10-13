@@ -42,9 +42,9 @@ import sys
 from binascii import crc32
 
 try:
-	import json
+  import json
 except ImportError:
-	import simplejson as json
+  import simplejson as json
 
 #
 # Constants
@@ -80,7 +80,8 @@ STRUCT_CRC32 = struct_class('>I')   # big-endian unsigned int
 
 class AvroTypeException(schema.AvroException):
   """Raised when datum is not an example of schema."""
-  def __init__(self, expected_schema, datum):
+  def __init__(self, expected_schema, datum, name=None):
+    self.name = name
     pretty_expected = json.dumps(json.loads(str(expected_schema)), indent=2)
     fail_msg = "The datum %s is not an example of the schema %s"\
                % (datum, pretty_expected)
@@ -98,30 +99,39 @@ class SchemaResolutionException(schema.AvroException):
 # Validate
 #
 
-def validate(expected_schema, datum):
+def validate(expected_schema, datum, name=None):
   """Determine if a python datum is an instance of a schema."""
   schema_type = expected_schema.type
   if schema_type == 'null':
-    return datum is None
+    status = datum is None
+    return status, name
   elif schema_type == 'boolean':
-    return isinstance(datum, bool)
+      status = isinstance(datum, bool)
+      return status, name
   elif schema_type == 'string':
-    return isinstance(datum, basestring)
+    status = isinstance(datum, basestring)
+    return status, name
   elif schema_type == 'bytes':
-    return isinstance(datum, str)
+    status = isinstance(datum, str)
+    return status, name
   elif schema_type == 'int':
-    return ((isinstance(datum, int) or isinstance(datum, long)) 
+    status = ((isinstance(datum, int) or isinstance(datum, long))
             and INT_MIN_VALUE <= datum <= INT_MAX_VALUE)
+    return status, name
   elif schema_type == 'long':
-    return ((isinstance(datum, int) or isinstance(datum, long)) 
+    status = ((isinstance(datum, int) or isinstance(datum, long))
             and LONG_MIN_VALUE <= datum <= LONG_MAX_VALUE)
+    return status, name
   elif schema_type in ['float', 'double']:
-    return (isinstance(datum, int) or isinstance(datum, long)
+    status = (isinstance(datum, int) or isinstance(datum, long)
             or isinstance(datum, float))
+    return status, name
   elif schema_type == 'fixed':
-    return isinstance(datum, str) and len(datum) == expected_schema.size
+    status = isinstance(datum, str) and len(datum) == expected_schema.size
+    return status, name
   elif schema_type == 'enum':
-    return datum in expected_schema.symbols
+    status = datum in expected_schema.symbols
+    return status, name
   elif schema_type == 'array':
     return (isinstance(datum, list) and
       False not in [validate(expected_schema.items, d) for d in datum])
@@ -131,11 +141,19 @@ def validate(expected_schema, datum):
       False not in
         [validate(expected_schema.values, v) for v in datum.values()])
   elif schema_type in ['union', 'error_union']:
-    return True in [validate(s, datum) for s in expected_schema.schemas]
+      for s in expected_schema.schemas:
+          status, name = validate(s, datum, name)
+          if status:
+              return status, name
+      return False, name
+    # return True in [validate(s, datum) for s in expected_schema.schemas]
   elif schema_type in ['record', 'error', 'request']:
-    return (isinstance(datum, dict) and
-      False not in
-        [validate(f.type, datum.get(f.name)) for f in expected_schema.fields])
+    is_datum_instance_valid = isinstance(datum, dict)
+    for f in expected_schema.fields:
+        status, name = validate(f.type, datum.get(f.name), f.name)
+        if not status:
+            return status, name
+    return (is_datum_instance_valid and True), name
 
 #
 # Decoder/Encoder
@@ -765,8 +783,9 @@ class DatumWriter(object):
 
   def write(self, datum, encoder):
     # validate datum
-    if not validate(self.writers_schema, datum):
-      raise AvroTypeException(self.writers_schema, datum)
+    is_valid, name = validate(self.writers_schema, datum)
+    if not is_valid:
+      raise AvroTypeException(self.writers_schema, datum, name)
     
     self.write_data(self.writers_schema, datum, encoder)
 
@@ -871,7 +890,8 @@ class DatumWriter(object):
     # resolve union
     index_of_schema = -1
     for i, candidate_schema in enumerate(writers_schema.schemas):
-      if validate(candidate_schema, datum):
+      is_valid, name = validate(candidate_schema, datum)
+      if is_valid:
         index_of_schema = i
     if index_of_schema < 0: raise AvroTypeException(writers_schema, datum)
 
